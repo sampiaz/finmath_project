@@ -52,6 +52,10 @@ def Backtest(df, sizing=None, quantity=500):
     df['shortPnL'] = 0
     df['longPnL'] = 0
 
+    # we hold each position for two days. assume borrow at 3%, lend at 2%
+    lending_factor = np.exp(-.02 * (2 / 252))
+    funding_factor = np.exp(-.03 * (2 / 252))
+
     def logistic(x, L=1, x_0=5, k=1):
         return L / (1 + np.exp(-k * (x - x_0)))
 
@@ -59,27 +63,28 @@ def Backtest(df, sizing=None, quantity=500):
 
         ### implied exceeds realized, we sell the straddle
         if row['volatility_edge'] > 0 and sizing == None:
-            df.at[index, 'shortPnL'] += -1 * df.at[index, 'straddle_change'] * 100
+            df.at[index, 'shortPnL'] += (-1 * df.at[index, 'straddle_change'] * 100) / lending_factor
             df.at[index, 'tradeSize'] = -100
         elif row['volatility_edge'] > 0 and sizing == 'Linear':
-            df.at[index, 'shortPnL'] += -1 * df.at[index, 'straddle_change'] * abs(
-                df.at[index, 'volatility_edge']) * quantity
+            df.at[index, 'shortPnL'] += (-1 * df.at[index, 'straddle_change'] * abs(
+                df.at[index, 'volatility_edge']) * quantity) / lending_factor
             df.at[index, 'tradeSize'] = -1 * abs(df.at[index, 'volatility_edge']) * quantity
         elif row['volatility_edge'] > 0 and sizing == 'S-curve':
-            df.at[index, 'shortPnL'] += -1 * df.at[index, 'straddle_change'] * logistic(
-                2 * abs(df.at[index, 'volatility_edge'])) * quantity
+            df.at[index, 'shortPnL'] += (-1 * df.at[index, 'straddle_change'] * logistic(
+                2 * abs(df.at[index, 'volatility_edge'])) * quantity) / lending_factor
             df.at[index, 'tradeSize'] = -1 * logistic(4 * abs(df.at[index, 'volatility_edge'])) * quantity * 10
 
             ##realized exceeds implied, we buy the straddle
         if row['volatility_edge'] < 0 and sizing == None:
-            df.at[index, 'longPnL'] += df.at[index, 'straddle_change'] * 100
+            df.at[index, 'longPnL'] += df.at[index, 'straddle_change'] * 100 * funding_factor
             df.at[index, 'tradeSize'] = 100
         elif row['volatility_edge'] < 0 and sizing == 'Linear':
-            df.at[index, 'longPnL'] += df.at[index, 'straddle_change'] * abs(df.at[index, 'volatility_edge']) * quantity
+            df.at[index, 'longPnL'] += df.at[index, 'straddle_change'] * abs(
+                df.at[index, 'volatility_edge']) * quantity * funding_factor
             df.at[index, 'tradeSize'] = abs(df.at[index, 'volatility_edge']) * quantity
         elif row['volatility_edge'] < 0 and sizing == 'S-curve':
             df.at[index, 'longPnL'] += df.at[index, 'straddle_change'] * logistic(
-                2 * abs(df.at[index, 'volatility_edge'])) * quantity
+                2 * abs(df.at[index, 'volatility_edge'])) * quantity * funding_factor
             df.at[index, 'tradeSize'] = logistic(4 * abs(df.at[index, 'volatility_edge'])) * quantity * 10
 
         df.at[index, 'totalPnL'] = df.at[index, 'shortPnL'] + df.at[index, 'longPnL']
@@ -139,7 +144,7 @@ class Earnings_strat():
         return close_vola_df
 
     # this function returns the 50 delta calls and puts for exdate immediately after filing_date
-    def __filter_opts(self):
+    def filter_opts(self):
 
         self.opt_expiry = {}
         result = pd.DataFrame(columns=['ticker', 'filing_date', 'exdate'])
@@ -208,7 +213,7 @@ class Earnings_strat():
     # and includes the next filing_date, adj_close, and rolling realized vol
     def clean_data(self):
         close_vola_df = self.__calc_rolling_vola()
-        cleaned_opts = self.__filter_opts()
+        cleaned_opts = self.filter_opts()
 
         cleaned_opts = cleaned_opts.reset_index()
         cleaned_opts = cleaned_opts.rename(columns={'index': 'date'})
@@ -236,7 +241,7 @@ class Earnings_strat():
     # returns df with bid/ask 'days' days before earnings and 1 day after earnings
     # as well as implied and realized vol 'days' days before earnings
     # so we can use this df to find a correlation between the two
-    def vol_vs_straddle(self, days):
+    def vol_vs_straddle(self, days_before, days_after):
 
         if (not self.data_cleaned):
             print("must run clean_data function first")
@@ -246,8 +251,8 @@ class Earnings_strat():
 
         opts['days_to_filing'] = opts['filing_date'] - opts['date']
         opts['filing_day_of_week'] = opts['filing_date'].dt.weekday
-        opts = opts[opts['days_to_filing'] == '{} days'.format(days)]
-        opts['day_after_filing'] = opts['filing_date'] + pd.Timedelta(days=1)
+        opts = opts[opts['days_to_filing'] == '{} days'.format(days_before)]
+        opts['day_after_filing'] = opts['filing_date'] + pd.Timedelta(days=days_after)
 
         opts = opts.rename(columns={'date': 'today', 'day_after_filing': 'date'})
         opts['adj_date'] = opts.apply(lambda row: self.__is_weekend(row['date']), axis=1)
